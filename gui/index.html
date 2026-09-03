@@ -1,0 +1,996 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hrpc inspector</title>
+<style>
+  /* ── Design tokens ───────────────────────────────────────────────────────────
+     Functionalist system (Dieter Rams): one type scale, a 4px spatial grid, colour as
+     information not decoration, hairlines over shadows. Dependency-free — system fonts
+     only (the GUI is served offline). Status/accent hexes are the validated palette
+     (≥3:1 both themes); pill/badge fills are decorative tints via color-mix (meaning is
+     always carried by glyph + word + outline, never colour alone). Dark is default;
+     light via prefers-color-scheme; the ◐ toggle forces either. */
+  :root, :root[data-theme="dark"] {
+    --bg:#0d1013; --panel:#161a20; --panel-2:#1b2027; --line:#232a33; --line-2:#2d353f;
+    --fg:#e8eaed; --dim:#8b949e; --faint:#5b636e;
+    --ok:#3fb950; --err:#f85149; --pend:#d29922; --accent:#589bff; --oncolor:#0b0f14; --embed:#a78bfa;
+    --rowhover:#161c25; --rowsel:#1c2836; --shadow:0 8px 24px rgba(0,0,0,.4);
+  }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+    --bg:#ffffff; --panel:#f6f8fa; --panel-2:#eef1f4; --line:#d8dee4; --line-2:#c9d1d9;
+    --fg:#1a1f26; --dim:#5c636d; --faint:#8b939d;
+    --ok:#1a7f37; --err:#cf222e; --pend:#9a6700; --accent:#0969da; --oncolor:#ffffff; --embed:#6d28d9;
+    --rowhover:#f0f3f6; --rowsel:#dde7f5; --shadow:0 8px 24px rgba(31,35,40,.12);
+  } }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --panel:#f6f8fa; --panel-2:#eef1f4; --line:#d8dee4; --line-2:#c9d1d9;
+    --fg:#1a1f26; --dim:#5c636d; --faint:#8b939d;
+    --ok:#1a7f37; --err:#cf222e; --pend:#9a6700; --accent:#0969da; --oncolor:#ffffff; --embed:#6d28d9;
+    --rowhover:#f0f3f6; --rowsel:#dde7f5; --shadow:0 8px 24px rgba(31,35,40,.12);
+  }
+  :root {
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --r1:5px; --r2:7px; --r3:10px;
+  }
+  * { box-sizing:border-box; }
+  ::selection { background:color-mix(in srgb, var(--accent) 30%, transparent); }
+  body { margin:0; height:100vh; display:flex; flex-direction:column; font:13px/1.5 var(--sans);
+         background:var(--bg); color:var(--fg); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+
+  /* ── Header ── */
+  header { display:flex; align-items:center; gap:var(--s2); padding:0 var(--s3); height:44px; flex:0 0 auto;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:12px; margin:0; font-weight:600; letter-spacing:.02em; display:flex; align-items:center; gap:8px; white-space:nowrap; }
+  header h1::before { content:""; width:9px; height:9px; border-radius:2px; background:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  #status { font-size:11px; color:var(--dim); display:inline-flex; align-items:center; gap:5px; }
+  #status::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--faint); transition:background .2s; }
+  #status.on { color:var(--ok); }
+  #status.on::before { background:var(--ok); box-shadow:0 0 6px var(--ok); }
+  input#filter { margin-left:auto; width:200px; cursor:text; }
+  input#filter, button, select { height:28px; background:var(--bg); border:1px solid var(--line); color:var(--fg);
+    border-radius:var(--r1); padding:0 var(--s2); cursor:pointer; font:inherit; font-size:12px;
+    transition:border-color .12s, background .12s, color .12s; }
+  input#filter:focus, select:focus { outline:none; border-color:var(--accent); }
+  input#filter::placeholder { color:var(--faint); }
+  button:hover, select:hover { border-color:var(--line-2); }
+  select { color:var(--dim); }
+  #theme { width:28px; padding:0; }
+  button#pause.on { color:var(--pend); border-color:var(--pend); background:color-mix(in srgb, var(--pend) 12%, transparent); }
+
+  /* ── KPI stat tiles ── */
+  .stats { display:flex; gap:var(--s2); padding:var(--s2) var(--s3); border-bottom:1px solid var(--line); background:var(--bg); }
+  .stats:empty { display:none; }
+  .tile { flex:0 0 auto; background:var(--panel); border:1px solid var(--line); border-radius:var(--r2); padding:var(--s2) var(--s3); min-width:80px; }
+  .tval { font:650 19px/1.1 var(--mono); font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+  .tval.st-error { color:var(--err); } .tval.st-streaming { color:var(--accent); }
+  .tlabel { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; margin-top:3px; }
+
+  /* ── Device chips (horizontally scrollable source rail) ── */
+  .devices { display:flex; align-items:center; gap:var(--s3); padding:var(--s2) var(--s3); border-bottom:1px solid var(--line); background:var(--panel); }
+  .devices-chips { display:flex; gap:var(--s2); flex-wrap:nowrap; overflow-x:auto; flex:1 1 auto; min-width:0; scrollbar-width:thin; }
+  .clear-device { flex:0 0 auto; font-size:11px; padding:3px 10px; border:1px solid var(--line); border-radius:4px; background:var(--panel-2); color:var(--dim); cursor:pointer; white-space:nowrap; }
+  .clear-device:hover { color:var(--fg); border-color:var(--dim); }
+  .clear-device[hidden] { display:none; }
+  .chip { flex:0 0 auto; font-size:11px; padding:3px 10px; border:1px solid var(--line); border-radius:999px; color:var(--dim); cursor:pointer; white-space:nowrap; transition:color .12s, border-color .12s, background .12s; }
+  .chip:hover { color:var(--fg); border-color:var(--line-2); }
+  .chip.sel { background:var(--accent); border-color:var(--accent); color:var(--oncolor); }
+  /* Leading liveness dot — a shape+colour cue independent of text contrast (● live / ○ idle). */
+  .chip .dot { font-size:9px; vertical-align:middle; color:var(--ok); }
+  .chip.stale .dot { color:var(--dim); }
+  .chip.sel .dot { color:var(--oncolor); }
+  /* Idle/gone source: idle > STALE_MS. Fade is only a SECONDARY cue — opacity .75 keeps text at
+     ≥3:1 in both themes (measured: dark 3.76, light 3.03; .45 failed at 2.16/1.85). Primary cues
+     are the hollow ○ dot + dashed border + italic. Never auto-removed on idle alone (a quiet-but-
+     live app must not vanish); server removes it on disconnect. .sel wins over the fade. */
+  .chip.stale { opacity:.75; border-style:dashed; font-style:italic; }
+  .chip.stale.sel { opacity:1; font-style:normal; }
+  /* Inline order toggle inside the detail pane's Stream heading. */
+  .ord-toggle { font-size:11px; font-weight:400; margin-left:8px; padding:1px 8px; border:1px solid var(--line); border-radius:999px; color:var(--dim); cursor:pointer; white-space:nowrap; }
+  .ord-toggle:hover { color:var(--fg); border-color:var(--line-2); }
+
+  /* ── Endpoint ignore-list dropdown — replaces the old horizontally-scrolling chip row (dozens
+     of endpoints are expected, but they now live in a scrollable popover, not the page). Native
+     <details>/<summary> popover: dependency-free, no JS toggle logic needed for open/close.
+     This is an IGNORE list: a CHECKED box means that endpoint's rows are HIDDEN — the opposite
+     sense of an include filter — so the menu states this explicitly, and .ep-row.is-ignored below
+     reads visually as "struck out / muted", matching the old .chip.ignored semantics. ── */
+  .ep-dropdown { position:relative; align-self:center; }
+  .ep-dropdown > summary { list-style:none; height:28px; display:inline-flex; align-items:center; gap:6px;
+    background:var(--bg); border:1px solid var(--line); color:var(--dim); border-radius:var(--r1);
+    padding:0 var(--s2); cursor:pointer; font:inherit; font-size:12px; white-space:nowrap;
+    transition:border-color .12s, background .12s, color .12s; }
+  .ep-dropdown > summary::-webkit-details-marker { display:none; }
+  .ep-dropdown > summary::marker { content:''; }
+  .ep-dropdown > summary:hover { color:var(--fg); border-color:var(--line-2); }
+  .ep-dropdown[open] > summary { border-color:var(--accent); color:var(--fg); }
+  /* Badge — visible even while the menu is closed, so the active ignore-state is never hidden. */
+  .ep-badge { font:600 10px/1 var(--mono); color:var(--oncolor); background:var(--accent);
+    border-radius:999px; padding:2px 6px; }
+  /* Floats over content; scrolls internally instead of the old horizontal page scroll. */
+  .ep-dropdown .menu { position:absolute; top:calc(100% + 6px); left:0; z-index:5; width:280px;
+    max-height:320px; overflow-y:auto; background:var(--panel-2); border:1px solid var(--line-2);
+    border-radius:var(--r2); box-shadow:var(--shadow); padding:var(--s2); scrollbar-width:thin; }
+  .ep-menu-head { display:flex; align-items:center; justify-content:space-between; gap:var(--s2);
+    font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:var(--s2);
+    padding-bottom:var(--s2); border-bottom:1px solid var(--line); }
+  .ep-menu-head button { height:22px; font-size:11px; padding:0 var(--s2); text-transform:none; letter-spacing:0; }
+  .ep-menu-empty { color:var(--dim); font-size:12px; padding:var(--s2) 2px; text-align:center; }
+  .ep-row { display:flex; align-items:center; gap:var(--s2); padding:4px 2px; font-size:12px; cursor:pointer; border-radius:3px; }
+  .ep-row:hover { background:var(--rowhover); }
+  .ep-row input[type="checkbox"] { margin:0; cursor:pointer; accent-color:var(--accent); flex:0 0 auto; }
+  .ep-row .ep-name { flex:1; min-width:0; font-family:var(--mono); color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ep-row .ep-count { color:var(--dim); font-family:var(--mono); font-size:11px; flex:0 0 auto; }
+  .ep-row.is-ignored .ep-name { color:var(--faint); text-decoration:line-through; }
+
+  /* ── Collapsible JSON tree (dependency-free, native <details>). Objects/arrays fold; primitives
+     are plain rows. Fold state is preserved across live re-renders via data-path (see script). ── */
+  .json { font:12px/1.6 var(--mono); }
+  .json summary { list-style:none; cursor:pointer; white-space:pre-wrap; word-break:break-word; border-radius:3px; }
+  .json summary:hover { background:color-mix(in srgb, var(--accent) 9%, transparent); }
+  .json summary::-webkit-details-marker { display:none; }
+  .json summary::before { content:'▸'; display:inline-block; width:1em; color:var(--dim); }
+  .json details[open] > summary::before { content:'▾'; }
+  .json .j-kids { padding-left:.6em; margin-left:.55em; border-left:1px solid var(--line); }
+  .json .j-row { padding-left:1em; white-space:pre-wrap; word-break:break-word; }
+  /* Show '{' when open, the collapsed '{ …N… }' summary when closed; hide children/close-brace when closed. */
+  .json details[open] > summary > .b-collapsed { display:none; }
+  .json details:not([open]) > summary > .b-open { display:none; }
+  .json details:not([open]) > .j-kids,
+  .json details:not([open]) > .j-close { display:none; }
+  .json .j-key { color:var(--accent); }
+  .json .j-string { color:var(--ok); }
+  .json .j-number { color:var(--fg); }
+  .json .j-boolean { color:var(--pend); }
+  .json .j-null { color:var(--dim); }
+  .json .j-count { color:var(--dim); font-style:italic; }
+  /* Badge marking a node that was parsed from a JSON string (double-encoded value). */
+  .json .j-embed { font-size:9px; letter-spacing:.04em; text-transform:uppercase; color:var(--embed);
+    border:1px solid color-mix(in srgb, var(--embed) 55%, var(--line)); border-radius:999px; padding:0 5px; margin-right:4px; }
+  /* Each stream-response entry: a little breathing room + a hairline so consecutive items read apart. */
+  .j-item { padding:var(--s2) 0; border-top:1px solid var(--line); }
+  .j-item:first-of-type { border-top:none; padding-top:var(--s1); }
+  /* Detail-pane action bar (replay / edit / expand-collapse). */
+  .j-tools { display:flex; flex-wrap:wrap; gap:var(--s2); margin:var(--s2) 0 var(--s3); }
+  .j-tools button, .edit-actions button { height:26px; font-size:11px; padding:0 var(--s2); }
+  #replayBtn, #sendEdit, #editReplayBtn { border-color:var(--accent); color:var(--accent); }
+  #replayBtn:hover, #sendEdit:hover, #editReplayBtn:hover { background:var(--accent); color:var(--oncolor); }
+  #editPanel { margin:var(--s2) 0; }
+  #editArgs { width:100%; min-height:88px; resize:vertical; font:12px/1.55 var(--mono);
+              background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:var(--r2); padding:var(--s2); }
+  #editArgs:focus { outline:none; border-color:var(--accent); }
+  .edit-actions { display:flex; gap:var(--s2); margin-top:var(--s2); }
+  /* GUI-replay provenance badge — injected traffic must never look like organic peer traffic. */
+  .gui-badge { font-size:10px; padding:1px 7px; border:1px solid var(--accent); border-radius:999px; color:var(--accent);
+    background:color-mix(in srgb, var(--accent) 12%, transparent); vertical-align:middle; white-space:nowrap; }
+  /* Transient toast (replay sent / replay failed). */
+  #toast { position:fixed; bottom:var(--s4); left:50%; transform:translateX(-50%) translateY(20px); opacity:0; pointer-events:none; z-index:10;
+           background:var(--panel-2); border:1px solid var(--line-2); color:var(--fg); border-radius:var(--r3); padding:var(--s2) var(--s4); font-size:12px;
+           box-shadow:var(--shadow); transition:opacity .15s, transform .15s; max-width:80vw; }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  #toast.err { border-color:var(--err); color:var(--err); }
+
+  /* ── Waterfall list + detail pane ── */
+  .wrap { flex:1; min-height:0; display:flex; position:relative; }
+  .list { flex:1; overflow:auto; scrollbar-width:thin; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:6px var(--s3); border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { position:sticky; top:0; z-index:1; background:var(--panel); color:var(--dim); font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  tr.row { cursor:pointer; transition:background .1s; }
+  tr.row td:first-child { box-shadow:inset 2px 0 0 transparent; color:var(--dim); font-family:var(--mono); font-size:11px; }
+  tr.row:hover { background:var(--rowhover); }
+  tr.row.sel { background:var(--rowsel); }
+  tr.row.sel td:first-child { box-shadow:inset 2px 0 0 var(--accent); }
+  .ep { color:var(--accent); font-family:var(--mono); }
+
+  /* Status pill: tint + outline + glyph + word (identity is never colour-alone — dataviz) */
+  .pill { display:inline-flex; align-items:center; gap:4px; font-size:11px; line-height:1.6; padding:0 8px; border-radius:999px; border:1px solid currentColor; }
+  .st-ok { color:var(--ok); background:color-mix(in srgb, var(--ok) 13%, transparent); }
+  .st-error { color:var(--err); background:color-mix(in srgb, var(--err) 13%, transparent); }
+  .st-pending { color:var(--pend); background:color-mix(in srgb, var(--pend) 13%, transparent); }
+  .st-streaming { color:var(--accent); background:color-mix(in srgb, var(--accent) 13%, transparent); }
+  .st-trace { color:var(--embed); background:color-mix(in srgb, var(--embed) 13%, transparent); }
+  .st-stall { color:var(--pend); background:color-mix(in srgb, var(--pend) 13%, transparent); }
+  .st-closed { color:var(--dim); background:color-mix(in srgb, var(--dim) 13%, transparent); }
+  /* stream.data child row — calm/muted tint (never alarming like error/stall): identity carried
+     by the ↳ glyph + word, not colour alone. */
+  .st-stream { color:var(--dim); background:color-mix(in srgb, var(--dim) 10%, transparent); }
+  .num { text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); font-family:var(--mono); font-size:12px; }
+  /* Stream-item (child) row — compact + indented, visually lighter than a real call row. */
+  tr.row.child-row td:first-child { color:var(--faint); }
+  tr.row.child-row .ep { color:var(--dim); font-weight:400; }
+  .ep-child-mark { padding-left:18px; }
+  .ep-child-seq { color:var(--faint); font-family:var(--mono); font-size:10.5px; margin-left:4px; }
+  .ep-child-snippet { color:var(--dim); font-family:var(--mono); font-size:11px; text-align:left !important; }
+
+  /* ── Thread-occupancy strip (thread.sample roll-ups) — a compact always-visible header widget,
+     one small bar per thread label seen ('js'/'core'/'ui'), filled to the latest busyPct. Fill
+     colour is a continuous color-mix from --ok (calm) toward --err (saturated) driven by the
+     percentage itself, so there is no hard threshold flicker — never a raw hex. Theme-aware via
+     the same tokens as everything else. thread.sample NEVER creates a row; it only repaints this
+     strip (see upsertThreadSample). ── */
+  .tstrip { display:flex; gap:var(--s3); flex-wrap:wrap; align-items:center; padding:var(--s2) var(--s3);
+            border-bottom:1px solid var(--line); background:var(--bg); }
+  .tstrip:empty { display:none; }
+  .tbar { display:inline-flex; align-items:center; gap:6px; font:11px var(--mono); }
+  .tbar .tlab { text-transform:uppercase; letter-spacing:.04em; color:var(--dim); font-weight:600; }
+  .tbar .ttrack { position:relative; width:64px; height:7px; border-radius:999px; background:var(--panel-2);
+                  border:1px solid var(--line); overflow:hidden; }
+  .tbar .tfill { position:absolute; inset:0 auto 0 0; height:100%; border-radius:999px 0 0 999px; transition:width .2s; }
+  .tbar .tpct { color:var(--fg); font-variant-numeric:tabular-nums; min-width:2.6em; }
+
+  .detail { width:42%; min-width:340px; border-left:1px solid var(--line); overflow:auto; padding:var(--s4); display:none; background:var(--panel); scrollbar-width:thin; }
+  .detail.show { display:block; }
+  .detail h1 { font:600 15px/1.3 var(--mono); margin:0 0 var(--s2); word-break:break-all; padding-right:26px; }
+  /* Close button for the detail pane — a sibling AFTER .detail, shown only while the pane is open
+     (pure CSS via the general-sibling combinator), floating over the pane's top-right corner. */
+  .detail-close { display:none; position:absolute; top:var(--s2); right:var(--s2); z-index:6;
+    width:22px; height:22px; padding:0; border:1px solid var(--line); border-radius:4px;
+    background:color-mix(in srgb, var(--panel) 80%, transparent); color:var(--dim);
+    font:600 13px/1 var(--sans); cursor:pointer; align-items:center; justify-content:center; }
+  .detail-close:hover { color:var(--fg); border-color:var(--dim); background:var(--panel-2); }
+  .detail.show ~ .detail-close { display:flex; }
+  .detail h2 { font-size:10px; color:var(--dim); margin:var(--s4) 0 var(--s1); text-transform:uppercase; letter-spacing:.06em; font-weight:600; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:var(--r2); padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; margin:0 0 6px; font:12px/1.55 var(--mono); }
+  .empty { color:var(--dim); padding:var(--s6) var(--s4); text-align:center; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>hrpc inspector</h1>
+  <span id="status">connecting…</span>
+  <select id="statusFilter" title="filter by status">
+    <option value="">all status</option>
+    <option value="ok">ok</option>
+    <option value="error">error</option>
+    <option value="streaming">streaming</option>
+    <option value="stream">stream (item)</option>
+    <option value="trace">trace</option>
+    <option value="stall">stall</option>
+    <option value="pending">pending</option>
+    <option value="closed">closed</option>
+  </select>
+  <select id="appSel" title="filter by app id"><option value="">all apps</option></select>
+  <details class="ep-dropdown" id="epDropdown">
+    <summary>Ignore endpoints<span class="ep-badge" id="epBadge" hidden>0</span></summary>
+    <div class="menu">
+      <div class="ep-menu-head">
+        <span>Checked endpoints are hidden</span>
+        <button type="button" id="epClearAll">Show all</button>
+      </div>
+      <div class="ep-menu-list" id="epMenuList"></div>
+    </div>
+  </details>
+  <input id="filter" placeholder="filter endpoint…" />
+  <button id="order" title="toggle newest-first / newest-last">Newest ↓</button>
+  <button id="pause">Pause</button>
+  <button id="clear" title="Clear all logs everywhere (purges server history too)">Clear all</button>
+  <button id="theme" title="toggle light/dark">◐</button>
+</header>
+<div id="stats" class="stats"></div>
+<div id="threads" class="tstrip"></div>
+<div id="devices" class="devices" style="display:none">
+  <div id="deviceChips" class="devices-chips"></div>
+  <button id="clearDevice" class="clear-device" type="button" hidden title="Clear only the selected device's logs">Clear device</button>
+</div>
+<div class="wrap">
+  <div class="list">
+    <table>
+      <thead><tr><th>Time</th><th>Endpoint</th><th>Status</th><th class="num">ms</th><th class="num">resp</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty">Waiting for RPC events… (start the app, or run the server with <code>--demo</code>)</div>
+  </div>
+  <div class="detail" id="detail"></div>
+  <button class="detail-close" id="detailClose" type="button" title="Close (Esc)" aria-label="Close detail">✕</button>
+</div>
+<div id="toast"></div>
+<script>
+  const rowsEl = document.getElementById('rows');
+  const emptyEl = document.getElementById('empty');
+  const statusEl = document.getElementById('status');
+  const detailEl = document.getElementById('detail');
+  const filterEl = document.getElementById('filter');
+  const statsEl = document.getElementById('stats');
+  const threadsEl = document.getElementById('threads');
+  const listEl = document.querySelector('.list');   // the scrollable row container
+  const byId = new Map();      // corrId -> {row data}
+  const order = [];            // corrId in arrival order
+  const childrenByParent = new Map(); // parent corrId -> [childId,...] arrival order, capped at CHILD_CAP
+  const CHILD_CAP = 50;         // per-stream cap on stream.data child rows (last 50 kept)
+  let selected = null;
+  let newestFirst = false;     // false = append at bottom (autoscroll); true = newest on top
+  let streamNewestFirst = true; // detail-pane stream order (true = newest on top, the old default)
+  const foldState = new Map();  // json tree: data-path -> open? — persists folds across live rebuilds;
+                                // cleared per selection so it can't collide across requests or grow unbounded
+  let editDraft = null;         // {open,value} of the edit-args panel — survives throttled live rebuilds
+                                // (a stream editing session isn't clobbered); cleared on a new selection
+  const STALE_MS = 15000;      // a source with no event for this long is greyed as idle/gone
+  const MAX_DEVICES = 200;     // cap the source rail; evict least-recently-seen beyond this
+  let sock = null;             // the live WS to the server (for sending replay invokes)
+  let invSeq = 0;              // invokeId counter
+
+  // Coalesce table re-renders (≤4/s) so a high-frequency stream can't rebuild the DOM out
+  // from under a click. Detail-pane updates stay immediate. Paused → don't rebuild.
+  let renderPending = false;
+  function scheduleRender() { if (renderPending || paused) return; renderPending = true; setTimeout(() => { renderPending = false; render(); }, 250); }
+
+  // --- Devices (sources) + filters ---
+  const devices = new Map();     // srcId -> { id, label, runtime, deviceId?, appId?, … }
+  const threadSamples = new Map(); // 'src|thread' -> latest thread.sample — occupancy strip only,
+                                    // NEVER touches byId/order (would flood the list at ~1/s/thread).
+  let deviceFilter = null;       // a specific source (chip row); null = all
+  const ignoredEndpoints = new Set(); // RPC method names to HIDE (exclude-style ignore list, not
+                                       // an include filter) — empty = show all endpoints; a method
+                                       // in this set has its rows hidden regardless of other filters.
+  let appIdFilter = '';          // by app id (multiple apps, same package)
+  let statusFilterVal = '';
+  let paused = false;
+  const devicesEl = document.getElementById('devices');
+  const deviceChipsEl = document.getElementById('deviceChips');
+  const clearDeviceBtn = document.getElementById('clearDevice');
+  const epBadgeEl = document.getElementById('epBadge');
+  const epMenuListEl = document.getElementById('epMenuList');
+  const appSelEl = document.getElementById('appSel');
+
+  function registerDevice(info) {
+    if (!info || !info.id) return;
+    const prev = devices.get(info.id) || {};
+    // Fallback label (before the __source announce lands) is the raw src id, which is
+    // URL-encoded — decode it so a slashy id reads "…/Aug-14", never "%2F". The announce's
+    // human label overrides this via ...info when it arrives.
+    let decoded; try { decoded = decodeURIComponent(info.id); } catch { decoded = info.id; }
+    devices.set(info.id, { label: decoded, runtime: '', ...prev, ...info, lastSeen: Date.now() });
+    // Bound the rail (Map has no cap otherwise): if a churning id-space overflows it, evict the
+    // least-recently-seen source that isn't the current filter. Selected source is always kept.
+    while (devices.size > MAX_DEVICES) {
+      let oldestId = null, oldestT = Infinity;
+      for (const [k, v] of devices) { if (k !== deviceFilter && (v.lastSeen || 0) < oldestT) { oldestT = v.lastSeen || 0; oldestId = k; } }
+      if (oldestId == null) break;
+      devices.delete(oldestId);
+    }
+    renderDevices();
+    populateSelectors();
+  }
+  // Bump a source's liveness on any event it emits (announce OR traffic). Cheap: no re-render
+  // here — the periodic sweep repaints staleness, and upsert already schedules a table render.
+  function touchDevice(id) { const d = devices.get(id); if (d) d.lastSeen = Date.now(); }
+  // Server signals a source is gone (its app disconnected) — remove the chip so it stops
+  // lingering. Reset the filter if it pointed at the removed source.
+  function removeDevice(id) {
+    if (!devices.delete(id)) return;
+    if (deviceFilter === id) deviceFilter = null;
+    renderDevices(); populateSelectors(); render(); renderThreads();
+  }
+  function populateSelectors() {
+    // App dropdown only; device selection is the horizontally-scrollable chip row above.
+    const apps = [...new Set([...devices.values()].map((d) => d.appId).filter(Boolean))].sort();
+    appSelEl.innerHTML = `<option value="">all apps</option>` +
+      apps.map((v) => `<option value="${esc(v)}"${v === appIdFilter ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  }
+  function renderDevices() {
+    if (devices.size === 0) { deviceChipsEl.innerHTML = ''; devicesEl.style.display = 'none'; clearDeviceBtn.hidden = true; return; }
+    devicesEl.style.display = 'flex';
+    const now = Date.now();
+    const chip = (id, label, sel, stale, title, dot) =>
+      `<span class="chip${sel ? ' sel' : ''}${stale ? ' stale' : ''}" data-dev="${esc(id)}"${title ? ` title="${esc(title)}"` : ''}>`
+      + `${dot ? `<span class="dot">${stale ? '○' : '●'}</span> ` : ''}${esc(label)}</span>`;
+    let html = chip('', `All (${devices.size})`, deviceFilter === null, false, '', false);
+    for (const [id, info] of devices) {
+      const idle = now - (info.lastSeen || 0);
+      const stale = idle > STALE_MS;
+      const title = stale ? `idle ${Math.round(idle / 1000)}s — no recent events` : 'live';
+      html += chip(id, info.label + (info.runtime ? ' · ' + info.runtime : ''), deviceFilter === id, stale, title, true);
+    }
+    deviceChipsEl.innerHTML = html;
+    // The per-device clear button shows only when a specific device is selected; label names it.
+    if (deviceFilter !== null && devices.has(deviceFilter)) {
+      const info = devices.get(deviceFilter);
+      clearDeviceBtn.hidden = false;
+      clearDeviceBtn.textContent = 'Clear ' + (info.label || deviceFilter);
+    } else {
+      clearDeviceBtn.hidden = true;
+    }
+    for (const el of deviceChipsEl.querySelectorAll('.chip')) {
+      el.onclick = () => { const d = el.getAttribute('data-dev'); deviceFilter = d === '' ? null : d; renderDevices(); render(); renderThreads(); };
+    }
+  }
+
+  // --- Endpoint ignore list (RPC method names) ---
+  // Distinct methods + per-method counts, built from real request/response rows ONLY — never
+  // plane:'trace' (obs.bridgeTraces) or plane:'thread' (thread.stall) rows, and thread.sample
+  // never reaches byId/order at all (see upsertThreadSample) so it can't appear here either.
+  // Respects the active deviceFilter, same as the table: selecting a source narrows the counts
+  // (and the endpoint list) to that source's traffic.
+  //
+  // Presented as a <details>/<summary> dropdown of checkboxes (not the old horizontally-
+  // scrolling chip row): CHECKED == ignored == hidden from the table. The trigger badge shows
+  // the ignored count so the active state reads even while the menu is closed.
+  function renderEndpoints() {
+    const counts = new Map(); // method -> count of currently-matching rows
+    for (const id of order) {
+      const r = byId.get(id);
+      if (!r || r.plane) continue; // trace/thread-plane rows are not "endpoints"
+      if (deviceFilter !== null && r.src !== deviceFilter) continue;
+      const m = r.method ?? '?';
+      counts.set(m, (counts.get(m) || 0) + 1);
+    }
+    // Union with the ignore set: a method the user already ignored must keep its row (and stay
+    // checked) even if its count is momentarily 0 — e.g. narrowed out by deviceFilter, or its
+    // rows aged out past the 5000-row cap. The user's choice is never silently dropped.
+    const methods = new Set([...counts.keys(), ...ignoredEndpoints]);
+
+    epBadgeEl.hidden = ignoredEndpoints.size === 0;
+    epBadgeEl.textContent = String(ignoredEndpoints.size);
+
+    if (methods.size === 0) { epMenuListEl.innerHTML = '<div class="ep-menu-empty">No endpoints yet</div>'; return; }
+    // Alphabetical — a stable order so rows don't reshuffle position under the user's cursor as
+    // live traffic counts change (a count-desc sort would).
+    const sorted = [...methods].sort((a, b) => String(a).localeCompare(String(b)));
+    let html = '';
+    for (const m of sorted) {
+      const n = counts.get(m) || 0;
+      const ignored = ignoredEndpoints.has(m);
+      const key = esc(encodeURIComponent(m));
+      html += `<label class="ep-row${ignored ? ' is-ignored' : ''}">`
+        + `<input type="checkbox" data-ep-cb="${key}"${ignored ? ' checked' : ''} />`
+        + `<span class="ep-name">${esc(m)}</span><span class="ep-count">${n}</span>`
+        + `</label>`;
+    }
+    epMenuListEl.innerHTML = html;
+    for (const cb of epMenuListEl.querySelectorAll('input[data-ep-cb]')) {
+      cb.onchange = () => {
+        const key = decodeURIComponent(cb.getAttribute('data-ep-cb'));
+        if (cb.checked) ignoredEndpoints.add(key); else ignoredEndpoints.delete(key);
+        renderEndpoints(); render();
+      };
+    }
+  }
+
+  // --- Thread-occupancy strip (thread.sample) --- keep only the latest sample per (src, thread);
+  // never creates a waterfall row. Respects deviceFilter: when a device is selected, only its
+  // threads are shown; when "All" is selected, threads are grouped by label (latest wins across
+  // sources) so the strip stays compact rather than one row per device.
+  function upsertThreadSample(ev) {
+    if (!ev || !ev.thread) return;
+    if (ev.src) touchDevice(ev.src);
+    threadSamples.set((ev.src || '') + '|' + ev.thread, ev);
+    renderThreads();
+  }
+  const THREAD_ORDER = ['js', 'core', 'ui']; // stable, familiar ordering; unknown labels sort after, alphabetically
+  function renderThreads() {
+    const byThread = new Map(); // thread label -> latest matching sample
+    for (const s of threadSamples.values()) {
+      if (deviceFilter !== null && s.src !== deviceFilter) continue;
+      const cur = byThread.get(s.thread);
+      if (!cur || (s.t || 0) >= (cur.t || 0)) byThread.set(s.thread, s);
+    }
+    if (byThread.size === 0) { threadsEl.innerHTML = ''; return; }
+    const labels = [...byThread.keys()].sort((a, b) => {
+      const ia = THREAD_ORDER.indexOf(a), ib = THREAD_ORDER.indexOf(b);
+      if (ia === -1 && ib === -1) return a.localeCompare(b);
+      if (ia === -1) return 1; if (ib === -1) return -1;
+      return ia - ib;
+    });
+    threadsEl.innerHTML = labels.map((th) => {
+      const s = byThread.get(th);
+      const pct = Math.max(0, Math.min(100, Math.round(Number(s.busyPct) || 0)));
+      const title = `${th} · ${pct}% busy over ${s.windowMs ?? '?'}ms · worst hitch ${s.maxLag ?? '?'}ms`;
+      // Continuous severity: mix toward --err as busy% rises, calm (--ok) under ~50%, warm above.
+      return `<span class="tbar" title="${esc(title)}">`
+        + `<span class="tlab">${esc(th)}</span>`
+        + `<span class="ttrack"><span class="tfill" style="width:${pct}%;background:color-mix(in srgb, var(--err) ${pct}%, var(--ok))"></span></span>`
+        + `<span class="tpct">${pct}%</span></span>`;
+    }).join('');
+  }
+  // Repaint staleness on a timer so a chip fades even while its app sits silent (no event to
+  // trigger a render). Interval < STALE_MS so the transition lands promptly.
+  setInterval(renderDevices, 5000);
+
+  const size = (v) => { try { return new Blob([JSON.stringify(v)]).size; } catch { return 0; } };
+  // Escape ALL interpolated text — method/label/args/response/stream items can carry remote
+  // peer / user-entered content (panel-engineer confirmed a live XSS otherwise).
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = (v) => { try { return esc(JSON.stringify(v, null, 2)); } catch { return esc(String(v)); } };
+  const time = (t) => new Date(t).toLocaleTimeString('en-GB', { hour12:false }) + '.' + String(t % 1000).padStart(3,'0');
+  // Numeric-by-convention wire fields (dur, count, lag, …). Nothing validates their type, and
+  // interpolating them raw let dur:'<img src=x onerror=…>' execute script here (CodeQL js/xss).
+  // Escapes UNCONDITIONALLY: esc() cannot alter any numeric form (42, -1.5, 1e+21, NaN all come
+  // out identical), and a conditional sanitiser leaves a String(v) path static analysis must
+  // treat as tainted — which is why the first version of this fix did not close the alert.
+  const num = (v) => (v == null ? '' : esc(String(v)));
+
+  // --- Collapsible JSON tree. Every key/value is esc()'d (same XSS rule as fmt). Objects/arrays
+  // become foldable <details>; primitives are plain rows. `path` keys the fold state so a live
+  // stream rebuild keeps the user's open/closed choices.
+  const jsonScalar = (v) => {
+    if (v === null) return '<span class="j-null">null</span>';
+    const t = typeof v;
+    if (t === 'number' || t === 'boolean') return `<span class="j-${t}">${esc(String(v))}</span>`;
+    if (t === 'string') return `<span class="j-string">"${esc(v)}"</span>`;
+    return `<span class="j-string">${esc(String(v))}</span>`; // undefined / bigint / symbol fallback
+  };
+  // A value that is itself a complete JSON string (double-encoded) → its parsed object/array, else
+  // undefined. Only strings that trim to a '{'/'[' and fully parse to an object are treated this way
+  // (a truncated or plain string won't parse and stays a string).
+  const embeddedJson = (s) => {
+    if (typeof s !== 'string' || s.length < 2) return undefined;
+    const t = s.trim();
+    if (t[0] !== '{' && t[0] !== '[') return undefined;
+    try { const p = JSON.parse(t); return p && typeof p === 'object' ? p : undefined; } catch { return undefined; }
+  };
+  const JSON_MAX_DEPTH = 200; // guard the recursive renderer: peer-controlled data can nest deeply
+                              // enough (≈30k levels fit in the 64KB body cap) to overflow the stack.
+                              // Real RPC payloads are shallow; bail with a marker well before the limit.
+  function jsonNode(v, keyHtml, path, isLast, depth) {
+    depth = depth || 0;
+    const comma = isLast ? '' : ',';
+    if (depth > JSON_MAX_DEPTH) return `<div class="j-row">${keyHtml}<span class="j-count">…max depth (${JSON_MAX_DEPTH})…</span>${comma}</div>`;
+    // Double-encoded JSON: render the parsed structure (foldable), flagged so it's clear it came
+    // from a string. The `json` badge distinguishes it from an organically-structured value.
+    if (typeof v === 'string') {
+      const parsed = embeddedJson(v);
+      if (parsed !== undefined) return jsonNode(parsed, keyHtml + '<span class="j-embed" title="parsed from a JSON string">json</span> ', path, isLast, depth + 1);
+    }
+    if (!v || typeof v !== 'object') return `<div class="j-row">${keyHtml}${jsonScalar(v)}${comma}</div>`;
+    const isArr = Array.isArray(v);
+    const entries = isArr ? v.map((x, i) => [i, x]) : Object.entries(v);
+    const [open, close] = isArr ? ['[', ']'] : ['{', '}'];
+    if (entries.length === 0) return `<div class="j-row">${keyHtml}${open}${close}${comma}</div>`;
+    const n = entries.length;
+    const kids = entries.map(([k, val], i) => {
+      const childKey = isArr ? '' : `<span class="j-key">"${esc(String(k))}"</span>: `;
+      // Encode each segment so a key containing '/' (e.g. a multiaddr) can't forge another node's
+      // path and couple their fold state — '/' never appears literally inside an encoded segment.
+      return jsonNode(val, childKey, path + '/' + encodeURIComponent(String(k)), i === n - 1, depth + 1);
+    }).join('');
+    const count = isArr ? `${n} item${n > 1 ? 's' : ''}` : `${n} key${n > 1 ? 's' : ''}`;
+    const isOpen = foldState.get(path) !== false; // default open
+    return `<details class="j-node" data-path="${esc(path)}"${isOpen ? ' open' : ''}>`
+      + `<summary>${keyHtml}<span class="b-open">${open}</span>`
+      + `<span class="b-collapsed">${open} <span class="j-count">…${count}…</span> ${close}${comma}</span></summary>`
+      + `<div class="j-kids">${kids}</div>`
+      + `<div class="j-row j-close">${close}${comma}</div></details>`;
+  }
+  // Render a value as a tree. On any failure, fall back WITHOUT re-serialising the (possibly
+  // pathological, e.g. ultra-deeply-nested) value — fmt(v) could itself overflow the stack and
+  // escape as an uncaught error at the render tick. jsonNode is depth-bounded, so this is belt-and-braces.
+  const jsonTree = (v, path) => {
+    try { return `<div class="json">${jsonNode(v, '', path, true)}</div>`; }
+    catch { return `<pre>(value could not be rendered)</pre>`; }
+  };
+
+  // Status shown as a pill: glyph + word (secondary encoding, never color-alone).
+  const GLYPH = { ok: '●', error: '✖', streaming: '▶', pending: '·', closed: '○', trace: '⋯', stall: '▚', stream: '↳' };
+  // Brief single-line preview of a stream.data item's value for the child row / snippet column.
+  // Truncated so a large item can't blow up a row; never left un-esc'd downstream.
+  function briefSnippet(v, max) {
+    max = max || 80;
+    let s;
+    try { s = JSON.stringify(v); } catch { s = String(v); }
+    if (s === undefined) s = String(v);
+    s = s.replace(/\s+/g, ' ');
+    if (s.length > max) s = s.slice(0, max - 1) + '…';
+    return s;
+  }
+  const statusPill = (s) => `<span class="pill st-${esc(s)}">${GLYPH[s] || '•'} ${esc(s)}</span>`;
+
+  function computeStats() {
+    if (order.length === 0) { statsEl.innerHTML = ''; return; }
+    let total = 0, errors = 0, streams = 0, durSum = 0, durN = 0;
+    for (const r of byId.values()) {
+      // Count only real RPC calls in the KPIs — the "plane" rows (stream-item children, trace,
+      // thread/stall) are indicators, not calls, and would inflate Requests (and skew the others).
+      if (r.plane) continue;
+      total++;
+      if (r.status === 'error') errors++;
+      if (r.stream) streams++;
+      else if (typeof r.dur === 'number') { durSum += r.dur; durN++; }
+    }
+    const tile = (label, val, cls = '') => `<div class="tile"><div class="tval ${cls}">${val}</div><div class="tlabel">${label}</div></div>`;
+    statsEl.innerHTML =
+      tile('Requests', total) +
+      tile('Errors', errors, errors ? 'st-error' : '') +
+      tile('Avg ms', durN ? Math.round(durSum / durN) : '—') +
+      tile('Streams', streams, streams ? 'st-streaming' : '') +
+      tile('Devices', devices.size);
+  }
+
+  // Remove a single row (by id) from order + byId, keeping the per-parent child-tracking map
+  // consistent no matter which path evicted it (global 5000-cap, per-stream 50-cap, or Clear).
+  // This is the ONE place that mutates childrenByParent on removal — every eviction path below
+  // routes through it so counts can't drift.
+  function dropRow(id) {
+    const idx = order.indexOf(id);
+    if (idx !== -1) order.splice(idx, 1);
+    const r = byId.get(id);
+    byId.delete(id);
+    if (r && r.plane === 'stream-item' && r.parent) {
+      const kids = childrenByParent.get(r.parent);
+      if (kids) {
+        const ci = kids.indexOf(id);
+        if (ci !== -1) kids.splice(ci, 1);
+        if (kids.length === 0) childrenByParent.delete(r.parent);
+      }
+    }
+    childrenByParent.delete(id); // in case `id` was itself a parent with tracked children
+    if (selected === id) { selected = null; detailEl.classList.remove('show'); }
+  }
+  // Global cap (mirrors the server's bound): evict oldest rows once order exceeds 5000. Shared by
+  // every upsert* path so trace/stall/request/stream-child rows are all subject to the same bound.
+  function capOrder() { while (order.length > 5000) dropRow(order[0]); }
+
+  let traceSeq = 0;
+  // A hypertrace event (from obs.bridgeTraces) is a POINT event, not a request/response — each is
+  // its own row on the "trace" plane, labelled className.event, with the trace data in the detail.
+  function upsertTrace(ev) {
+    const id = 'trace-' + (++traceSeq);
+    const r = { corrId: id, method: ev.method || 'trace', t: ev.t || Date.now(), status: 'trace', plane: 'trace', trace: ev, items: [] };
+    if (ev.src) { r.src = ev.src; touchDevice(ev.src); }
+    byId.set(id, r); order.push(id);
+    capOrder();
+    scheduleRender();
+  }
+  let stallSeq = 0;
+  // A thread.stall event ('hard hitch just happened') is a POINT event on its own 'thread' plane —
+  // same treatment as upsertTrace: one row per stall, never coalesced with the request/response
+  // rows it may reference via blame[].corrId. thread.sample (the periodic roll-up) is intercepted
+  // earlier in ws.onmessage and never reaches here — it must not create a row.
+  function upsertStall(ev) {
+    const id = 'stall-' + (++stallSeq);
+    const r = { corrId: id, method: 'stall · ' + (ev.thread || '?'), t: ev.t || Date.now(), status: 'stall', plane: 'thread', stall: ev, items: [] };
+    if (ev.src) { r.src = ev.src; touchDevice(ev.src); }
+    byId.set(id, r); order.push(id);
+    capOrder();
+    scheduleRender();
+  }
+  function upsert(ev) {
+    if (ev && ev.type === 'trace') return upsertTrace(ev);
+    if (ev && ev.type === 'thread.stall') return upsertStall(ev);
+    const id = ev.corrId;
+    let r = byId.get(id);
+    if (!r) { r = { corrId:id, method:ev.method, t:ev.t, status:'pending', items:[] }; byId.set(id, r); order.push(id); }
+    if (ev.method && !r.method) r.method = ev.method;
+    if (ev.origin === 'gui') { r.origin = 'gui'; if (ev.replayOf) r.replayOf = ev.replayOf; } // a GUI-initiated replay
+    // Only the __source announce (sticky + replayed first) creates a chip; we just bump liveness
+    // for a known one. A src with NO announce means the source is gone (its announce was evicted on
+    // disconnect) — don't resurrect a chip for it when its old events replay from history.
+    if (ev.src) { r.src = ev.src; touchDevice(ev.src); }
+    switch (ev.type) {
+      case 'request.start': r.args = ev.args; r.status = 'pending'; break;
+      case 'stream.open': r.stream = true; r.status = 'streaming'; break;
+      case 'stream.data': {
+        // Parent row keeps accumulating exactly as before (count + its own STREAM RESPONSES detail).
+        r.stream = true; r.status = 'streaming';
+        r.count = (r.count || 0) + 1;
+        r.items.push({ seq: ev.seq, item: ev.item, t: ev.t });
+        if (r.items.length > 100) r.items.shift();
+        // IN ADDITION: a distinct, compact child row so the response flow is visible in the
+        // waterfall itself, in arrival order. Stable id per item — guard a duplicate delivery.
+        const childId = `${id}#${ev.seq}`;
+        if (!byId.has(childId)) {
+          const cr = { corrId: childId, method: ev.method || r.method, t: ev.t, status: 'stream',
+            plane: 'stream-item', parent: id, seq: ev.seq, item: ev.item, src: ev.src || r.src };
+          byId.set(childId, cr); order.push(childId);
+          let kids = childrenByParent.get(id);
+          if (!kids) { kids = []; childrenByParent.set(id, kids); }
+          kids.push(childId);
+          // Per-stream cap: evict this stream's oldest child once it exceeds CHILD_CAP. Routed
+          // through dropRow so it stays consistent with the global cap's bookkeeping.
+          if (kids.length > CHILD_CAP) dropRow(kids[0]);
+        }
+        break;
+      }
+      case 'request.end':
+        r.status = ev.status || 'ok'; r.response = ev.response; r.error = ev.error; r.dur = ev.dur;
+        if (ev.count != null) r.count = ev.count;
+        break;
+    }
+    // Cap client-side history (memory + render cost) — mirror the server's bound.
+    capOrder();
+    scheduleRender();
+    if (selected === id && !paused) scheduleDetail(r); // throttled, like the table — a fast stream can't thrash it
+  }
+
+  // Coalesce detail-pane rebuilds to ≤4/s (same reason as scheduleRender): a high-frequency
+  // stream would otherwise re-escape up to 40 <pre> blocks on every message. Selection is
+  // immediate (showDetail(r, true) on click); this path is only live updates of the open record.
+  let detailPending = false, detailRec = null;
+  function scheduleDetail(r) {
+    detailRec = r;
+    if (detailPending || paused) return;
+    detailPending = true;
+    // Guard at FIRE time against the selection changing during the 250ms window: only repaint if
+    // the scheduled record is still the selected one. Without this, clicking another row (or Clear)
+    // mid-window would let the stale timer overwrite the pane with the old record (or resurrect a
+    // cleared one). corrId match covers both: a new selection or selected===null both mismatch.
+    setTimeout(() => {
+      detailPending = false;
+      if (detailRec && !paused && detailRec.corrId === selected) showDetail(detailRec, false);
+    }, 250);
+  }
+
+  function render() {
+    computeStats();
+    renderEndpoints(); // cheap; piggybacks on render()'s existing ≤4/s throttle (scheduleRender)
+    const f = filterEl.value.trim().toLowerCase();
+    // Detect whether the user is parked at the "new" end BEFORE we rebuild — so we only
+    // autoscroll when they're already there, never yanking them while reading older rows.
+    const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 40;
+    const atTop = listEl.scrollTop < 40;
+    rowsEl.innerHTML = '';
+    let shown = 0;
+    const ids = newestFirst ? order.slice().reverse() : order;
+    for (const id of ids) {
+      const r = byId.get(id);
+      if (deviceFilter !== null && r.src !== deviceFilter) continue;
+      if (appIdFilter) { const srcInfo = devices.get(r.src); if (!srcInfo || srcInfo.appId !== appIdFilter) continue; }
+      if (statusFilterVal && r.status !== statusFilterVal) continue;
+      if (ignoredEndpoints.has(r.method)) continue; // exclude-style: hide rows for ignored endpoints
+      if (f && !String(r.method).toLowerCase().includes(f)) continue;
+      const tr = document.createElement('tr');
+      // Stream-data child row: compact, indented, visually lighter than a real call row — a flow
+      // marker, not its own request.
+      if (r.plane === 'stream-item') {
+        tr.className = 'row child-row' + (selected === id ? ' sel' : '');
+        tr.innerHTML = `<td>${time(r.t)}</td>`
+          + `<td class="ep ep-child-mark">↳ ${esc(r.method ?? '?')}<span class="ep-child-seq">#${esc(String(r.seq))}</span></td>`
+          + `<td>${statusPill(r.status)}</td>`
+          + `<td class="num"></td>`
+          + `<td class="num ep-child-snippet" title="${esc(briefSnippet(r.item, 300))}">${esc(briefSnippet(r.item))}</td>`;
+        tr.onclick = () => { selected = id; foldState.clear(); editDraft = null; render(); showDetail(r, true); };
+        rowsEl.appendChild(tr); shown++;
+        continue;
+      }
+      tr.className = 'row' + (selected === id ? ' sel' : '');
+      const respSize = r.trace ? (r.trace.event || '·')
+        : r.stall ? `${r.stall.lag ?? '?'}ms`
+        : (r.stream ? `▶ ${r.count || 0}` : (r.response !== undefined ? size(r.response) + 'B' : (r.error ? 'err' : '')));
+      const replayBadge = r.origin === 'gui' ? `<span class="gui-badge" title="replayed from the GUI">↩ gui</span> ` : '';
+      tr.innerHTML = `<td>${time(r.t)}</td><td class="ep">${replayBadge}${esc(r.method ?? '?')}</td>`
+        + `<td>${statusPill(r.status)}</td>`
+        + `<td class="num">${num(r.dur)}</td><td class="num">${esc(respSize)}</td>`;
+      tr.onclick = () => { selected = id; foldState.clear(); editDraft = null; render(); showDetail(r, true); }; // new request → fresh folds/edit
+      rowsEl.appendChild(tr); shown++;
+    }
+    // Distinguish "no events yet" from "events exist but filtered out".
+    if (order.length === 0) { emptyEl.textContent = 'Waiting for RPC events… (start the app, or run the server with --demo)'; emptyEl.style.display = 'block'; }
+    else if (shown === 0) { emptyEl.textContent = `0 of ${order.length} events match the current filters`; emptyEl.style.display = 'block'; }
+    else emptyEl.style.display = 'none';
+    // Stick to the "new" end only if the user was already parked there.
+    if (newestFirst) { if (atTop) listEl.scrollTop = 0; }
+    else if (nearBottom) listEl.scrollTop = listEl.scrollHeight;
+  }
+
+  function showDetail(r, isSelection = false) {
+    detailEl.classList.add('show');
+    // NOTE: fold state is cleared by the row-selection handler (a genuine new request), NOT here —
+    // showDetail also runs for same-record reformats (stream-order toggle) and live updates, which
+    // must PRESERVE folds. isSelection here governs only scroll-to-top.
+    // Capture scroll state BEFORE rebuild so a live stream never yanks a reader. Both stream
+    // orders are handled (the row list only covers append): newest-first PREPENDS, so a mid-scroll
+    // reader must be re-anchored by the inserted height; newest-last APPENDS below, so position is
+    // already stable unless parked at the bottom.
+    const oldH = detailEl.scrollHeight, oldTop = detailEl.scrollTop;
+    const wasNearBottom = oldH - oldTop - detailEl.clientHeight < 40;
+    const wasNearTop = oldTop < 40;
+    // Stream-item (child) row: a single stream.data item, not its own request — no replay/edit.
+    if (r.plane === 'stream-item') {
+      detailEl.innerHTML = `<h1 class="ep">↳ ${esc(r.method ?? '?')} <span style="color:var(--dim);font:400 12px var(--mono)">#${esc(String(r.seq))}</span></h1>`
+        + `<div><span class="pill st-stream">↳ stream</span><span style="color:var(--dim)"> · ${esc(time(r.t))}</span></div>`
+        + `<h2>Item</h2>${jsonTree(r.item, 'sitem-' + r.corrId)}`;
+      for (const d of detailEl.querySelectorAll('details[data-path]')) d.addEventListener('toggle', () => foldState.set(d.dataset.path, d.open));
+      if (isSelection) detailEl.scrollTop = 0;
+      return;
+    }
+    // Trace-plane row (from obs.bridgeTraces): a point event, rendered as event-data + traced-object.
+    if (r.trace) {
+      const t = r.trace;
+      detailEl.innerHTML = `<h1 class="ep">${esc(t.method || 'trace')}</h1>`
+        + `<div><span class="pill st-trace">⋯ trace</span><span style="color:var(--dim)">${t.caller ? ' · ' + esc(t.caller) : ''}</span></div>`
+        + `<h2>Event data</h2>${jsonTree(t.data ?? { event: t.event }, 'tdata')}`
+        + (t.objProps ? `<h2>Traced object · ${esc(t.className || '')}</h2>${jsonTree(t.objProps, 'tobj')}` : '');
+      if (isSelection) detailEl.scrollTop = 0;
+      return;
+    }
+    // Thread-stall row: the whole point is "what was running when it hitched" — put the blame
+    // list (in-flight RPCs at the instant of the stall) front and centre, not buried under a
+    // generic request/response layout. Guard against missing/empty blame (a stall can legitimately
+    // have no in-flight calls).
+    if (r.stall) {
+      const s = r.stall;
+      const blame = Array.isArray(s.blame) ? s.blame : [];
+      detailEl.innerHTML = `<h1 class="ep">${esc('stall · ' + (s.thread || '?'))}</h1>`
+        + `<div><span class="pill st-stall">▚ stall</span><span style="color:var(--dim)"> · ${esc(String(s.lag ?? '?'))} ms blocked</span></div>`
+        + `<h2>Thread</h2><pre>${esc(s.thread ?? '?')}</pre>`
+        + `<h2>Blame — in-flight at the moment of the stall (${blame.length})</h2>`
+        + (blame.length
+            ? blame.map((b, i) => `<div class="j-item"><div class="j-count">#${i + 1}${b && b.corrId != null ? ' · ' + esc(String(b.corrId)) : ''}${b && b.t != null ? ' · ' + esc(time(b.t)) : ''}</div>`
+                + `<div class="ep">${esc(b && b.method != null ? String(b.method) : '(unknown method)')}</div></div>`).join('')
+            : `<pre>(no in-flight calls — the stall wasn't attributable to a pending RPC)</pre>`);
+      if (isSelection) detailEl.scrollTop = 0;
+      return;
+    }
+    const extra = `${r.dur != null ? ' · ' + num(r.dur) + ' ms' : ''}${r.count != null ? ' · ' + num(r.count) + ' msgs' : ''}`;
+    const guiBadge = r.origin === 'gui' ? `<span class="gui-badge" title="GUI replay of ${esc(r.replayOf || '?')}">↩ gui${r.replayOf ? ' · replay of ' + esc(r.replayOf) : ''}</span>` : '';
+    // Replay is offered only for a source that advertised caps.invoke (a dev build with the
+    // capability on). Sends nothing but the corrId — the app re-runs its own logged call.
+    const canInvoke = !!(r.src && devices.get(r.src)?.caps?.invoke) && !!r.corrId;
+    const replayBtn = canInvoke
+      ? `<button id="replayBtn" title="re-run this exact call on the source app">↩ Replay</button>`
+        + `<button id="editReplayBtn" title="edit the args, then re-run (same method)">✎ Edit &amp; replay</button>`
+      : '';
+    // Editable-args panel: the METHOD stays locked to this call; only args are editable, sent as JSON.
+    // Open-state + in-progress text come from editDraft so a throttled live rebuild (streaming record)
+    // never wipes what the user is typing.
+    const draftOpen = canInvoke && editDraft && editDraft.open;
+    const draftVal = canInvoke && editDraft ? editDraft.value : JSON.stringify(r.args ?? [], null, 2);
+    const editPanel = canInvoke
+      ? `<div id="editPanel" style="display:${draftOpen ? 'block' : 'none'}"><textarea id="editArgs" spellcheck="false">${esc(draftVal)}</textarea>`
+        + `<div class="edit-actions"><button id="sendEdit" title="send with the edited args">↩ Send edited</button><button id="cancelEdit">Cancel</button></div></div>`
+      : '';
+    let html = `<h1 class="ep">${esc(r.method ?? '?')} ${guiBadge}</h1>`
+      + `<div>${statusPill(r.status)}<span style="color:var(--dim)">${extra}</span></div>`
+      + `<div class="j-tools">${replayBtn}<button id="jExpand">Expand all</button><button id="jCollapse">Collapse all</button></div>`
+      + editPanel
+      + `<h2>Request</h2>${jsonTree(r.args, 'req')}`;
+    if (r.stream) {
+      const items = r.items.slice(-40);
+      const ordered = streamNewestFirst ? items.slice().reverse() : items;
+      const toggle = `<span id="streamOrder" class="ord-toggle" title="toggle newest-first / newest-last">${streamNewestFirst ? 'Newest ↑' : 'Newest ↓'}</span>`;
+      html += `<h2>Stream responses (${num(r.count ?? 0)})${toggle}</h2>`;
+      html += ordered.length
+        ? ordered.map((it) => `<div class="j-item"><div class="j-count">#${esc(String(it.seq))} · ${time(it.t)}</div>${jsonTree(it.item, 's' + it.seq)}</div>`).join('')
+        : `<pre>(subscribed — waiting for data…)</pre>`;
+      if (r.error) html += `<h2>Error</h2><div class="st-error">${jsonTree(r.error, 'err')}</div>`;
+    } else if (r.error) {
+      html += `<h2>Error</h2><div class="st-error">${jsonTree(r.error, 'err')}</div>`;
+    } else {
+      html += `<h2>Core response</h2>${r.response === undefined ? '<pre>(pending…)</pre>' : jsonTree(r.response, 'resp')}`;
+    }
+    detailEl.innerHTML = html;
+    // Persist folds across live rebuilds, and wire expand/collapse-all over every node in the pane.
+    for (const d of detailEl.querySelectorAll('details[data-path]')) d.addEventListener('toggle', () => foldState.set(d.dataset.path, d.open));
+    const je = document.getElementById('jExpand'), jc = document.getElementById('jCollapse');
+    if (je) je.onclick = () => { for (const d of detailEl.querySelectorAll('details[data-path]')) { d.open = true; foldState.set(d.dataset.path, true); } };
+    if (jc) jc.onclick = () => { for (const d of detailEl.querySelectorAll('details[data-path]')) { d.open = false; foldState.set(d.dataset.path, false); } };
+    const rb = document.getElementById('replayBtn');
+    if (rb) rb.onclick = () => replay(r);
+    const ta = document.getElementById('editArgs');
+    if (ta) ta.oninput = () => { editDraft = { open: true, value: ta.value }; }; // persist keystrokes across live rebuilds
+    const erb = document.getElementById('editReplayBtn');
+    if (erb) erb.onclick = () => {
+      const p = document.getElementById('editPanel'); if (!p) return;
+      const open = p.style.display === 'none';
+      p.style.display = open ? 'block' : 'none';
+      editDraft = { open, value: (document.getElementById('editArgs') || {}).value ?? draftVal };
+      if (open) { const t = document.getElementById('editArgs'); if (t) t.focus(); } // autofocus on open
+    };
+    const se = document.getElementById('sendEdit');
+    if (se) se.onclick = () => {
+      let parsed;
+      try { parsed = JSON.parse(document.getElementById('editArgs').value); }
+      catch { return toast('args must be valid JSON', true); }
+      if (!Array.isArray(parsed)) return toast('args must be a JSON array, e.g. ["room-1"]', true);
+      replay(r, parsed);
+    };
+    const ce = document.getElementById('cancelEdit');
+    if (ce) ce.onclick = () => { const p = document.getElementById('editPanel'); if (p) p.style.display = 'none'; editDraft = null; };
+    const so = document.getElementById('streamOrder');
+    if (so) so.onclick = (e) => { e.stopPropagation(); streamNewestFirst = !streamNewestFirst; showDetail(r, false); }; // reformat, not a new selection — keep folds & scroll
+    // Restore scroll. New selection → start at top. Live update of the open stream → hold the
+    // reader's place: newest-first prepends (re-anchor by height delta unless at top); newest-last
+    // appends (stick to bottom only if already there).
+    if (isSelection) detailEl.scrollTop = 0;
+    else if (r.stream && streamNewestFirst) detailEl.scrollTop = wasNearTop ? 0 : oldTop + (detailEl.scrollHeight - oldH);
+    else if (r.stream && !streamNewestFirst) detailEl.scrollTop = wasNearBottom ? detailEl.scrollHeight : oldTop;
+  }
+
+  filterEl.oninput = render;
+  document.getElementById('statusFilter').onchange = (e) => { statusFilterVal = e.target.value; render(); };
+  appSelEl.onchange = (e) => { appIdFilter = e.target.value; render(); };
+  document.getElementById('epClearAll').onclick = () => { ignoredEndpoints.clear(); renderEndpoints(); render(); };
+  const orderBtn = document.getElementById('order');
+  orderBtn.onclick = () => {
+    newestFirst = !newestFirst;
+    orderBtn.textContent = newestFirst ? 'Newest ↑' : 'Newest ↓';
+    render();
+    listEl.scrollTop = newestFirst ? 0 : listEl.scrollHeight;   // jump to the new end
+  };
+  const pauseBtn = document.getElementById('pause');
+  pauseBtn.onclick = () => {
+    paused = !paused; pauseBtn.classList.toggle('on', paused); pauseBtn.textContent = paused ? 'Paused' : 'Pause';
+    // On unpause, refresh the table AND the open detail pane — events for the selected record may
+    // have arrived while paused (and a completed request would otherwise never re-trigger a repaint).
+    if (!paused) { render(); const r = selected && byId.get(selected); if (r) showDetail(r, false); }
+  };
+  // Clear logs. Local wipe + a server purge so it actually sticks: the server replays HISTORY to
+  // every browser on connect, so without purging it the rows come back on refresh/reconnect. The
+  // server echoes a {__cleared} broadcast to ALL viewers (see ws.onmessage), which calls clearLogs
+  // — so the normal path clears via that broadcast; the offline fallback clears locally.
+  function clearLogs(scope, src) {
+    if (scope === 'device' && src) {
+      // Routed through dropRow so childrenByParent stays consistent (a parent's src and its
+      // stream-item children's src are the same, since children inherit ev.src || r.src).
+      const hadSelected = selected;
+      for (let i = order.length - 1; i >= 0; i--) {
+        const id = order[i], r = byId.get(id);
+        if (r && r.src === src) dropRow(id);
+      }
+      if (hadSelected && selected === null) editDraft = null; // the selected row was among those removed
+      for (const k of [...threadSamples.keys()]) if (k.startsWith(src + '|')) threadSamples.delete(k);
+    } else {
+      byId.clear(); order.length = 0; threadSamples.clear(); childrenByParent.clear();
+      selected = null; editDraft = null; detailEl.classList.remove('show');
+    }
+    render(); renderThreads();
+  }
+  document.getElementById('clear').onclick = () => {
+    if (sock && sock.readyState === 1) sock.send(JSON.stringify({ __clear: { scope: 'all' } }));
+    else clearLogs('all');            // offline fallback (no server to purge/echo)
+  };
+  clearDeviceBtn.onclick = () => {
+    if (deviceFilter === null || !devices.has(deviceFilter)) return;
+    const src = deviceFilter;
+    if (sock && sock.readyState === 1) sock.send(JSON.stringify({ __clear: { scope: 'device', src } }));
+    else clearLogs('device', src);
+  };
+  // Close the detail pane (deselects the row). Wired to the ✕ button and the Esc key.
+  function closeDetail() {
+    if (!selected && !detailEl.classList.contains('show')) return;
+    selected = null; editDraft = null; detailEl.classList.remove('show'); render();
+  }
+  document.getElementById('detailClose').onclick = closeDetail;
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+  document.getElementById('theme').onclick = () => {
+    const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+  };
+
+  // Replay a logged call: ask its source to re-run it, referenced BY corrId. Plain replay sends no
+  // args (app uses its own logged args). "Edit & replay" passes editedArgs (a JSON array) — the app
+  // keeps the METHOD locked to the logged call and only substitutes the args. caps.invoke-gated.
+  function replay(r, editedArgs) {
+    if (!r || !r.src || !r.corrId) return;
+    if (!sock || sock.readyState !== 1) { toast('not connected — cannot replay', true); return; } // no silent no-op
+    const inv = { corrId: r.corrId, target: r.src, invokeId: 'inv-' + (++invSeq) };
+    if (editedArgs !== undefined) inv.args = editedArgs;
+    sock.send(JSON.stringify({ __invoke: inv }));
+    toast(`↩ replaying ${r.method || r.corrId}${editedArgs !== undefined ? ' (edited)' : ''}…`);
+  }
+  let toastTimer = null;
+  function toast(msg, isErr) {
+    const el = document.getElementById('toast');
+    el.textContent = msg; el.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.className = ''; }, 3500);
+  }
+
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => { sock = ws; statusEl.textContent = 'connected'; statusEl.className = 'on'; ws.send(JSON.stringify({ __hello:'browser' })); };
+    ws.onclose = () => { if (sock === ws) sock = null; statusEl.textContent = 'disconnected — retrying'; statusEl.className = ''; setTimeout(connect, 1500); };
+    ws.onmessage = (m) => { try {
+      const ev = JSON.parse(m.data);
+      if (ev && ev.__source) registerDevice(ev.__source);
+      else if (ev && ev.__cleared) clearLogs(ev.__cleared.scope, ev.__cleared.src); // server purged history → clear this viewer too
+      else if (ev && ev.__source_gone) removeDevice(ev.__source_gone);
+      else if (ev && ev.type === 'invoke.error') toast(ev.error === 'unknown-corrId'
+        ? 'can’t replay: this call is too old (outside the app’s replay window)'
+        : 'replay failed: ' + (ev.error || 'error'), true);
+      // thread.sample is a periodic (~1/s) per-thread roll-up: it only repaints the occupancy
+      // strip, and is intercepted here so it NEVER reaches upsert()/order/byId (would flood the
+      // waterfall at 1 row/s/thread). thread.stall, by contrast, falls through to upsert(ev) below,
+      // which dispatches it to upsertStall — a genuine row on the 'thread' plane.
+      else if (ev && ev.type === 'thread.sample') upsertThreadSample(ev);
+      else upsert(ev);
+    } catch {} };
+  }
+  connect();
+</script>
+</body>
+</html>

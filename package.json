@@ -1,0 +1,65 @@
+{
+  "name": "hrpc-inspector",
+  "version": "0.1.0",
+  "description": "hrpc based debugging and observability for Bare. Tap an RPC client or a raw transport and read endpoint, request, response, latency and live subscription streams in a local GUI, or merge multi-peer timelines over a Hyperswarm hub.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "bin": {
+    "hrpc-inspector": "bin/hrpc-inspector.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./detect": {
+      "types": "./src/detect.ts",
+      "default": "./dist/detect.js"
+    },
+    "./observe": {
+      "types": "./src/observe.ts",
+      "default": "./dist/observe.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "gui",
+    "src",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "USAGE.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && esbuild src/index.ts src/detect.ts src/observe.ts --bundle --format=esm --platform=neutral --external:hrpc-inspector-probe --external:hrpc-inspector-protocol --external:hyperswarm --external:hypercore-crypto --outdir=dist",
+    "prepare": "npm run build",
+    "test": "bash test/run-all.sh"
+  },
+  "repository": "git+https://github.com/holepunchto/hrpc-inspector.git",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "dependencies": {
+    "hrpc-inspector-probe": "^0.1.0"
+  },
+  "peerDependencies": {
+    "hypercore-crypto": "^3.0.0",
+    "hyperswarm": "^4.0.0",
+    "react-native-bare-kit": "*"
+  },
+  "peerDependenciesMeta": {
+    "hypercore-crypto": {
+      "optional": true
+    },
+    "hyperswarm": {
+      "optional": true
+    },
+    "react-native-bare-kit": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
