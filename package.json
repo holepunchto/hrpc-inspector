@@ -1,24 +1,24 @@
 {
   "name": "hrpc-inspector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "hrpc based debugging and observability for Bare. Tap an RPC client or a raw transport and read endpoint, request, response, latency and live subscription streams in a local GUI, or merge multi-peer timelines over a Hyperswarm hub.",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "bin": {
     "hrpc-inspector": "bin/hrpc-inspector.mjs"
   },
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./detect": {
-      "types": "./src/detect.ts",
+      "types": "./dist/detect.d.ts",
       "default": "./dist/detect.js"
     },
     "./observe": {
-      "types": "./src/observe.ts",
+      "types": "./dist/observe.d.ts",
       "default": "./dist/observe.js"
     }
   },
@@ -30,18 +30,20 @@
     "LICENSE",
     "NOTICE",
     "README.md",
-    "USAGE.md"
+    "USAGE.md",
+    "scripts"
   ],
   "scripts": {
-    "build": "rm -rf dist && esbuild src/index.ts src/detect.ts src/observe.ts --bundle --format=esm --platform=neutral --external:hrpc-inspector-probe --external:hrpc-inspector-protocol --external:hyperswarm --external:hypercore-crypto --outdir=dist",
+    "build": "rm -rf dist && esbuild src/index.ts src/detect.ts src/observe.ts --bundle --format=esm --platform=neutral --external:hrpc-inspector-probe --external:hrpc-inspector-protocol --external:hyperswarm --external:hypercore-crypto --outdir=dist && npm run build:types",
     "prepare": "npm run build",
-    "test": "bash test/run-all.sh"
+    "test": "bash test/run-all.sh",
+    "build:types": "tsc -p tsconfig.build.json && node scripts/rewrite-dts-specifiers.mjs dist"
   },
   "repository": "git+https://github.com/holepunchto/hrpc-inspector.git",
   "license": "Apache-2.0",
   "sideEffects": false,
   "dependencies": {
-    "hrpc-inspector-probe": "^0.1.0"
+    "hrpc-inspector-probe": "^0.1.1"
   },
   "peerDependencies": {
     "hypercore-crypto": "^3.0.0",
@@ -60,6 +62,7 @@
     }
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }
