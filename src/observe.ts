@@ -232,7 +232,9 @@ async function autoSwarm(topic: string, onConnection: (stream: WritableStreamLik
   const Hyperswarm = (await import('hyperswarm')).default;
   const crypto = (await import('hypercore-crypto')).default;
   const swarm = new Hyperswarm();
-  const topicKey = crypto.hash(Buffer.from(topic));
+  // Buffer is a Bare/Node global and absent in browsers; this path only runs under Bare.
+  const enc = new TextEncoder();
+  const topicKey = crypto.hash(enc.encode(topic));
   swarm.on('connection', (conn: WritableStreamLike) => onConnection(conn));
   await swarm.join(topicKey, { client: true, server: false }).flushed();
 }
