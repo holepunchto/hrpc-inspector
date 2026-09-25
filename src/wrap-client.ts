@@ -57,10 +57,16 @@ function defaultPreview(v: unknown): unknown {
   }
 }
 
-// Attach PASSIVE listeners to a subscription stream. Non-destructive when the app also uses
-// `.on('data')` (every listener receives each item). If a consumer instead uses `.read()` /
-// async-iteration, adding a data listener flips it to flowing mode — opt out with
-// monitorStreams:false for those.
+// Observe a subscription stream WITHOUT changing its behaviour.
+//
+// This wraps `emit` instead of calling `.on('data', ...)`. Registering a data listener is not
+// passive: it puts the stream into flowing mode immediately, so anything emitted before the app
+// attaches its own listener is delivered to us and LOST to the app. That is a debug-only data
+// loss — the app silently misses items, with no error — and it is real: keet's RPC subscriptions
+// return their stream synchronously, while the consumer attaches a tick later.
+//
+// Wrapping `emit` cannot cause that: we only see events the stream was already delivering. If
+// nothing consumes the stream, nothing is emitted and we report nothing, which is the truth.
 function monitorStream(report: Report, endpoint: string, corrId: string, stream: any, t0: number, preview: (v: unknown) => unknown, tag: Record<string, unknown>): void {
   report({ type: 'stream.open', method: endpoint, corrId, t: Date.now(), ...tag });
   let n = 0;
@@ -71,10 +77,24 @@ function monitorStream(report: Report, endpoint: string, corrId: string, stream:
     report({ type: 'request.end', method: endpoint, corrId, status, count: n, dur: Date.now() - t0, t: Date.now(), ...tag, ...(extra || {}) });
   };
   try {
-    stream.on('data', (item: unknown) => report({ type: 'stream.data', method: endpoint, corrId, seq: ++n, item: preview(item), t: Date.now(), ...tag }));
-    stream.on('error', (err: unknown) => settle('error', { error: String(err) }));
-    stream.on('end', () => settle('closed'));
-    stream.on('close', () => settle('closed'));
+    const original = stream.emit;
+    if (typeof original !== 'function') return;
+    stream.emit = function patched(this: unknown, name: string, ...args: unknown[]): unknown {
+      // Observation must never affect delivery: record, then hand off unchanged. A throw in the
+      // reporting path would surface as a stream error in the app, so it is swallowed.
+      try {
+        if (name === 'data') {
+          report({ type: 'stream.data', method: endpoint, corrId, seq: ++n, item: preview(args[0]), t: Date.now(), ...tag });
+        } else if (name === 'error') {
+          settle('error', { error: String(args[0]) });
+        } else if (name === 'end' || name === 'close') {
+          settle('closed');
+        }
+      } catch {
+        /* never break the stream */
+      }
+      return original.apply(this, [name, ...args] as never);
+    };
   } catch (e) {
     report({ type: 'request.end', method: endpoint, corrId, status: 'error', error: 'monitor-failed: ' + String(e), dur: 0, t: Date.now(), ...tag });
   }

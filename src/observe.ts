@@ -128,6 +128,15 @@ export interface ObserveOptions {
    * Set false ONLY for a purely-local view that never leaves the machine (F3/F4/F9).
    */
   redact?: boolean;
+  /**
+   * Per-`method` FORCED redaction, for when global `redact` is off (the local viewer default).
+   * A listed method still appears in the GUI — you see it fired, when, how long it took, whether
+   * it errored, and the SHAPE of its payload (`{phrase: 'string'}`) — but its values are replaced
+   * by a content summary. Use it for methods that carry secrets you never want rendered, e.g.
+   * a recovery phrase. This is a denylist: a newly added secret-bearing method must be listed.
+   * Ignored when `redact` is on, because everything is redacted already.
+   */
+  redactMethods?: Iterable<string>;
   /** Supply a shared Redactor (e.g. to reuse its local peer reverse-map). Default: a fresh one. */
   redactor?: Redactor;
   /** Per-`method` opt-in allowlist for full payload bodies (default: none — bodies summarised). */
@@ -249,6 +258,10 @@ export function observe(opts: ObserveOptions = {}): ObserveHandle {
   const redactOn = opts.redact ?? (opts.websocket ? false : true);
   const redactor: Redactor | null =
     opts.redactor ?? (redactOn ? new Redactor({ bodyAllowlist: opts.bodyAllowlist }) : null);
+  // Only meaningful while global redaction is off; when it is on these methods are covered anyway.
+  const redactMethods = new Set(opts.redactMethods ?? []);
+  const methodRedactor: Redactor | null =
+    !redactor && redactMethods.size > 0 ? new Redactor() : null;
   // Identity ON THE WIRE — hashed ids / no human labels when redaction is on. `handle.source`
   // keeps the original for the app's own use.
   const wireSource = redactor ? redactSource(source, redactor) : source;
@@ -306,7 +319,15 @@ export function observe(opts: ObserveOptions = {}): ObserveHandle {
   const flusher = new BatchFlusher<L2Event>({
     intervalMs: opts.intervalMs ?? 200,
     onFlush: (batch) => {
-      const out = redactor ? redactor.redactBatch(batch) : batch;
+      const out = redactor
+        ? redactor.redactBatch(batch)
+        : methodRedactor
+          ? batch.map((e) =>
+              redactMethods.has(String((e as Record<string, unknown>).method))
+                ? (methodRedactor.redact(e as Record<string, unknown>) as L2Event)
+                : e,
+            )
+          : batch;
       // Stamp the (wire) source id so the GUI can group/select by device.
       exporter.export(out.map((e) => ({ ...(e as object), src: wireSource.id })));
     },
