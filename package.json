@@ -1,6 +1,6 @@
 {
   "name": "hrpc-inspector",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "hrpc based debugging and observability for Bare. Tap an RPC client or a raw transport and read endpoint, request, response, latency and live subscription streams in a local GUI, or merge multi-peer timelines over a Hyperswarm hub.",
   "type": "module",
   "main": "./dist/index.js",

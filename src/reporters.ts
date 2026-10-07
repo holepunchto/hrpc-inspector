@@ -25,6 +25,8 @@ export interface WebSocketReporterOptions {
    * replay/invoke path); leaving it undefined keeps the reporter strictly send-only, as before.
    */
   onMessage?: (msg: any) => void;
+  /** Ceiling for the reconnect backoff, in ms. Default 30000. */
+  maxReconnectMs?: number;
 }
 
 /**
@@ -37,9 +39,17 @@ export function createWebSocketReporter(url: string, opts: WebSocketReporterOpti
   const reconnectMs = opts.reconnectMs ?? 3000;
   const OPEN = 1;
 
+  const maxReconnectMs = opts.maxReconnectMs ?? 30000;
+
   let ws: any = null;
   let queue: unknown[] = [];
   let closed = false;
+  // A reconnect already scheduled. Without this, export() — which runs on every flush, i.e. every
+  // ~200ms — would open a fresh socket the moment the previous one failed, defeating the backoff
+  // entirely. A browser logs EVERY refused WebSocket connect to the console itself, before any
+  // onerror handler runs, so that turned "no GUI running" into a console flooded at 5 errors/sec.
+  let retryTimer: any = null;
+  let backoffMs = reconnectMs;
 
   function enqueue(ev: unknown) {
     queue.push(ev);
@@ -48,21 +58,33 @@ export function createWebSocketReporter(url: string, opts: WebSocketReporterOpti
   function rawSend(ev: unknown) {
     try { ws.send(JSON.stringify(ev)); } catch { enqueue(ev); }
   }
+  function scheduleRetry() {
+    if (closed || retryTimer) return;
+    retryTimer = setTimeout(() => { retryTimer = null; ensure(); }, backoffMs);
+    // Widen the gap each time the viewer stays absent, so a dev session with no GUI settles at one
+    // attempt per maxReconnectMs instead of one per flush. Reset to `reconnectMs` on a real open.
+    backoffMs = Math.min(backoffMs * 2, maxReconnectMs);
+    if (typeof retryTimer?.unref === 'function') retryTimer.unref();
+  }
+
   function ensure() {
     if (closed || !WS) return;
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+    if (retryTimer) return; // a reconnect is already pending — do not stack another socket on top
     try {
       ws = new WS(url);
       ws.onopen = () => {
+        backoffMs = reconnectMs; // the viewer is back; retry promptly if it goes away again
         if (opts.announce !== undefined) rawSend({ __source: opts.announce }); // identify this device first
         const q = queue; queue = []; for (const e of q) rawSend(e);
       };
-      ws.onclose = () => { ws = null; if (!closed) setTimeout(ensure, reconnectMs); };
+      ws.onclose = () => { ws = null; scheduleRetry(); };
       ws.onerror = () => {};
       // Bidirectional only when a handler was supplied (dev/replay path). Never throws inward.
       if (opts.onMessage) ws.onmessage = (m: any) => { try { opts.onMessage!(JSON.parse(m.data)); } catch { /* ignore malformed inbound */ } };
     } catch {
       ws = null;
+      scheduleRetry();
     }
   }
 
@@ -77,6 +99,7 @@ export function createWebSocketReporter(url: string, opts: WebSocketReporterOpti
     },
     close() {
       closed = true;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       try { ws?.close(); } catch {}
       ws = null;
     },

@@ -101,7 +101,7 @@ function monitorStream(report: Report, endpoint: string, corrId: string, stream:
 }
 
 function wrapFn(report: Report, endpoint: string, fn: any, self: any, preview: (v: unknown) => unknown, monitorStreams: boolean, onCall?: (corrId: string, method: string, args: unknown[]) => void): any {
-  return function observed(this: unknown, ...args: unknown[]) {
+  const wrapped = function observed(this: unknown, ...args: unknown[]) {
     const corrId = 'rpc-' + ++seq;
     // Consume the invoke tag ONCE, and only for the exact method being replayed.
     let tag: Record<string, unknown> = {};
@@ -131,6 +131,18 @@ function wrapFn(report: Report, endpoint: string, fn: any, self: any, preview: (
     }
     return result;
   };
+
+  // Carry the original identity across. An app may read `fn.name` — keet's own System Log does
+  // (`method: apiFn.name`), and every entry showed "observed" instead of the endpoint. `length`
+  // goes too, since arity is the other thing reflection commonly checks. Both are configurable
+  // on a function, so this cannot throw; guarded anyway, because the tap must never break a client.
+  try {
+    Object.defineProperty(wrapped, 'name', { value: fn.name, configurable: true });
+    Object.defineProperty(wrapped, 'length', { value: fn.length, configurable: true });
+  } catch {
+    /* identity is a nicety; never fail the wrap over it */
+  }
+  return wrapped;
 }
 
 /**
