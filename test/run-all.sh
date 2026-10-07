@@ -13,6 +13,7 @@ run "observe.test.mjs (plug-and-play + runtime detect)"      "node observe.test.
 run "observe-redaction.test.mjs (redaction on export path)"  "node observe-redaction.test.mjs"
 run "redact-methods.test.mjs (per-method redaction)"        "node redact-methods.test.mjs"
 run "wrap-client.test.mjs (RPC tap + streams)"               "node wrap-client.test.mjs"
+run "fn-identity.test.mjs (wrapping preserves fn.name)"     "node fn-identity.test.mjs"
 run "stream-passive.test.mjs (monitoring never consumes)"   "node stream-passive.test.mjs"
 run "inflight.test.mjs (in-flight call tracking)"            "node inflight.test.mjs"
 run "ws-reporter.test.mjs (WebSocket dev-viewer transport)"   "node ws-reporter.test.mjs"
